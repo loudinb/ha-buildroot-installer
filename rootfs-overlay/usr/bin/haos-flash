@@ -14,6 +14,9 @@ fi
 if [ "$1" = "dev" ]; then
 	echo "Getting latest Home Assistant OS version from channel dev..."
 	channel="https://version.home-assistant.io/dev.json"
+elif [ "$1" = "beta" ]; then
+	echo "Getting latest Home Assistant OS version from channel beta..."
+	channel="https://version.home-assistant.io/beta.json"
 else
 	echo "Getting latest Home Assistant OS version from channel stable..."
 	channel="https://version.home-assistant.io/stable.json"
@@ -23,7 +26,7 @@ version=$(curl --no-progress-meter -L "${channel}" | jq -r '.hassos.green')
 echo -n "Installing Home Assitant OS ${version} to "
 
 if [ "$1" = "dev" ]; then
-	url="https://os-builds.home-assistant.io/${version}/haos_green-${version}.img.xz"
+	url="https://os-artifacts.home-assistant.io/${version}/haos_green-${version}.img.xz"
 else
 	url="https://github.com/home-assistant/operating-system/releases/download/${version}/haos_green-${version}.img.xz"
 fi
