@@ -11,26 +11,119 @@ then
 	exit 1
 fi
 
-if [ "$1" = "dev" ]; then
-	echo "Getting latest Home Assistant OS version from channel dev..."
-	channel="https://version.home-assistant.io/dev.json"
-elif [ "$1" = "beta" ]; then
-	echo "Getting latest Home Assistant OS version from channel beta..."
-	channel="https://version.home-assistant.io/beta.json"
-else
-	echo "Getting latest Home Assistant OS version from channel stable..."
-	channel="https://version.home-assistant.io/stable.json"
+# Helper: extract a kernel command line parameter value
+# Usage: cmdline_param "param_name"
+# Returns the value after '=', or fails if not found
+cmdline_param() {
+	set -- $(cat /proc/cmdline)
+	for arg in "$@"; do
+		case "$arg" in
+			"$1"=*)
+				echo "${arg#*=}"
+				return 0
+				;;
+		esac
+	done
+	return 1
+}
+
+url=""
+version=""
+channel_name=""
+
+# Priority 1: Check kernel command line for haos_url
+kurl=$(cmdline_param haos_url) || true
+if [ -n "$kurl" ]; then
+	echo "Using custom image URL from kernel command line..."
+	url="$kurl"
 fi
 
-version=$(curl --no-progress-meter -L "${channel}" | jq -r '.hassos.green')
-echo -n "Installing Home Assitant OS ${version} to "
-
-if [ "$1" = "dev" ]; then
-	url="https://os-artifacts.home-assistant.io/${version}/haos_green-${version}.img.xz"
-else
-	url="https://github.com/home-assistant/operating-system/releases/download/${version}/haos_green-${version}.img.xz"
+# Priority 2: Check kernel command line for haos_version
+if [ -z "$url" ]; then
+	kver=$(cmdline_param haos_version) || true
+	if [ -n "$kver" ]; then
+		version="$kver"
+		echo "Using custom version ${version} from kernel command line."
+	fi
 fi
 
+# Priority 3: Check if positional argument is a URL or channel name
+if [ -z "$url" ] && [ -z "$version" ]; then
+	case "$1" in
+		http://*|https://*)
+			url="$1"
+			echo "Using custom image URL from argument..."
+			;;
+		*)
+			channel_name="$1"
+			;;
+	esac
+fi
+
+# If we have a version but no url, determine channel and build URL
+if [ -z "$url" ] && [ -n "$version" ]; then
+	case "$channel_name" in
+		dev)
+			url="https://os-artifacts.home-assistant.io/${version}/haos_green-${version}.img.xz"
+			;;
+		*)
+			url="https://github.com/home-assistant/operating-system/releases/download/${version}/haos_green-${version}.img.xz"
+			;;
+	esac
+	echo -n "Installing Home Assistant OS ${version} to "
+fi
+
+# If we still have no url, resolve via channel API (existing behavior)
+if [ -z "$url" ]; then
+	if [ "$channel_name" = "dev" ]; then
+		echo "Getting latest Home Assistant OS version from channel dev..."
+		channel="https://version.home-assistant.io/dev.json"
+	elif [ "$channel_name" = "beta" ]; then
+		echo "Getting latest Home Assistant OS version from channel beta..."
+		channel="https://version.home-assistant.io/beta.json"
+	else
+		echo "Getting latest Home Assistant OS version from channel stable..."
+		channel="https://version.home-assistant.io/stable.json"
+	fi
+
+	version=$(curl --no-progress-meter -L "${channel}" | jq -r '.hassos.green')
+	echo -n "Installing Home Assistant OS ${version} to "
+
+	if [ "$channel_name" = "dev" ]; then
+		url="https://os-artifacts.home-assistant.io/${version}/haos_green-${version}.img.xz"
+	else
+		url="https://github.com/home-assistant/operating-system/releases/download/${version}/haos_green-${version}.img.xz"
+	fi
+fi
+
+# Validate URL
+case "$url" in
+	https://*) ;;
+	http://*)
+		echo "WARNING: Using insecure HTTP URL. Proceeding anyway."
+		;;
+	*)
+		echo "ERROR: Invalid URL: $url"
+		echo "URL must start with http:// or https://"
+		echo none > /sys/class/leds/yellow:heartbeat/trigger
+		exit 1
+		;;
+esac
+
+echo "Image URL: $url"
+
+# Determine decompression method based on URL suffix
+case "$url" in
+	*.img.xz)  decompress="unxz --stdout" ;;
+	*.img.gz)  decompress="gunzip -c" ;;
+	*.img)     decompress="cat" ;;
+	*)
+		echo "WARNING: Unrecognized file extension, assuming xz compression."
+		decompress="unxz --stdout"
+		;;
+esac
+
+# Detect target device
 if [ -b /dev/mmcblk0 ]
 then
 	echo "mmcblk0."
@@ -45,7 +138,7 @@ fi
 echo timer > /sys/class/leds/yellow:heartbeat/trigger
 echo 100 > /sys/class/leds/yellow:heartbeat/delay_on
 echo 100 > /sys/class/leds/yellow:heartbeat/delay_off
-if curl --no-progress-meter -L "$url" | unxz --stdout | dd of=${device} bs=4M
+if curl --no-progress-meter -L "$url" | $decompress | dd of=${device} bs=4M
 then
 	echo "Successfully installed Home Assistant OS, shutting down the system"
 	echo default-on > /sys/class/leds/yellow:heartbeat/trigger
